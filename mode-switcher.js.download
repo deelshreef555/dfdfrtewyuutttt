@@ -1,0 +1,2927 @@
+/**
+ * TikTok Recharge Mode Switcher
+ * Provides Mode 1 (Classic) and Mode 2 (Compact with Recharge info)
+ */
+
+console.log('[ModeSwitcher] Script file starting to load...');
+
+(function() {
+    'use strict';
+
+    console.log('[ModeSwitcher] IIFE executing...');
+
+    // Configuration
+    const STORAGE_KEY = 'tiktok_layout_mode';
+    const COIN_COUNTER_KEY = 'tiktok_total_coins';
+    const DEFAULT_COIN_AMOUNT_KEY = 'mode2_coin_amount';
+    const MODE_1 = 'mode-1';
+    const MODE_2 = 'mode-2';
+    const MODE_3 = 'mode-3';
+    const MODE3_COIN_PACKAGES = [
+        { coins: 30, price: 0.31 },
+        { coins: 350, price: 3.65 },
+        { coins: 700, price: 7.25 },
+        { coins: 1400, price: 14.49 },
+        { coins: 3500, price: 36.2 },
+        { coins: 'custom', price: null }
+    ];
+    const MODE3_CUSTOM_INDEX = MODE3_COIN_PACKAGES.length - 1;
+    const MODE3_CONTAINER_ID = 'mode3Container';
+    const MODE3_SELECTION_TEXT_ID = 'mode3SelectionText';
+    let mode3LayoutInitialized = false;
+    let mode3SelectedIndex = -1;
+    const mode3Elements = {
+        container: null,
+        coinButtons: [],
+        buyButton: null,
+        selectionText: null,
+        selectionSummary: null,
+        coinCounter: null,
+        settingsBtn: null,
+        logoutBtn: null
+    };
+
+    function toInteger(value) {
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) return NaN;
+            return Math.trunc(value);
+        }
+
+        if (typeof value === 'string') {
+            const normalized = value.replace(/[^0-9\-]/g, '');
+            if (normalized === '' || normalized === '-' || normalized === '--') {
+                return NaN;
+            }
+            const parsed = parseInt(normalized, 10);
+            return Number.isNaN(parsed) ? NaN : parsed;
+        }
+
+        const coerced = Number(value);
+        if (!Number.isFinite(coerced)) return NaN;
+        return Math.trunc(coerced);
+    }
+
+    function sanitizePositiveAmount(value, fallback = 0) {
+        const integer = toInteger(value);
+        if (!Number.isFinite(integer) || integer <= 0) {
+            return fallback;
+        }
+        return integer;
+    }
+
+    function isEnhancedMode(mode = currentMode) {
+        return ENHANCED_MODES.has(mode);
+    }
+
+    function getStoredCoinTotal() {
+        const stored = toInteger(localStorage.getItem(COIN_COUNTER_KEY));
+        if (Number.isFinite(stored) && stored >= 0) {
+            return stored;
+        }
+
+        const current = toInteger(totalCoins);
+        if (Number.isFinite(current) && current >= 0) {
+            return current;
+        }
+
+        return 0;
+    }
+
+    // State
+    const VALID_MODES = new Set([MODE_1, MODE_2, MODE_3]);
+    const ENHANCED_MODES = new Set([MODE_2, MODE_3]);
+    let currentMode = localStorage.getItem(STORAGE_KEY) || MODE_1;
+    if (!VALID_MODES.has(currentMode)) {
+        currentMode = MODE_1;
+    }
+    let totalCoins = toInteger(localStorage.getItem(COIN_COUNTER_KEY));
+    if (!Number.isFinite(totalCoins) || totalCoins < 0) {
+        totalCoins = 0;
+    }
+    let initialized = false;
+
+    const ADD_AT_SYMBOL_KEY = 'add_at_symbol';
+    const USERNAME_PLACEHOLDER_KEY = 'username_at_placeholder';
+    const PROFILE_LOOKUP_KEY = 'tiktok_profile_lookup';
+
+    function getUsernameInputs() {
+        const inputs = [];
+
+        const primary = document.querySelector('input[data-slot="input"][placeholder="Type"]') ||
+                        document.querySelector('input[data-slot="input"]');
+        if (primary) {
+            inputs.push(primary);
+        }
+
+        const mode2Input = document.getElementById('mode2UsernameInput');
+        if (mode2Input) {
+            inputs.push(mode2Input);
+        }
+
+        const mode3Input = document.getElementById('mode3UsernameInput');
+        if (mode3Input) {
+            inputs.push(mode3Input);
+        }
+
+        const loginInput = document.getElementById('loginUsername');
+        if (loginInput) {
+            loginInput.dataset.skipAddAt = 'true';
+            inputs.push(loginInput);
+        }
+
+        return inputs.filter((input, index, arr) => arr.indexOf(input) === index);
+    }
+
+    function shouldPrefixForInput(input, addAt) {
+        if (!addAt || !input) return false;
+        if (input.dataset && input.dataset.skipAddAt === 'true') return false;
+        if (input.id === 'loginUsername') return false;
+        return true;
+    }
+
+    function formatUsernameForInput(input, baseValue, addAt) {
+        const value = baseValue || '';
+        const usePlaceholder = input && input.dataset && input.dataset.useAtPlaceholder === 'true';
+
+        if (!addAt) {
+            return value.length === 0 ? '' : value;
+        }
+
+        if (value.length === 0 && usePlaceholder) {
+            return '@';
+        }
+
+        if (shouldPrefixForInput(input, addAt) && value.length > 0) {
+            return `@${value}`;
+        }
+
+        return value;
+    }
+
+    function mirrorUsernameValue(source, baseValue, addAt) {
+        getUsernameInputs().forEach(input => {
+            if (!input || input === source) return;
+            const formatted = formatUsernameForInput(input, baseValue, addAt);
+            if (input.value !== formatted) {
+                input.value = formatted;
+            }
+        });
+    }
+
+    function handleUsernameInput(event) {
+        if (!event || !event.target) {
+            return;
+        }
+
+        const addAt = localStorage.getItem(ADD_AT_SYMBOL_KEY) === 'true';
+        const input = event.target;
+        const original = input.value || '';
+        
+        // Only strip @ symbols when the toggle is ON (to prevent double @@)
+        // When toggle is OFF, allow users to type @ manually
+        const baseValue = addAt ? original.replace(/^@+/, '') : original;
+        const formattedValue = formatUsernameForInput(input, baseValue, addAt);
+
+        if (input.value !== formattedValue) {
+            input.value = formattedValue;
+        }
+
+        mirrorUsernameValue(input, baseValue, addAt);
+    }
+
+    function resetUsernameInputsToPlaceholder() {
+        const inputs = getUsernameInputs();
+        if (!inputs.length) return;
+
+        localStorage.setItem(USERNAME_PLACEHOLDER_KEY, 'true');
+
+        const addAtEnabled = localStorage.getItem(ADD_AT_SYMBOL_KEY) === 'true';
+        let source = null;
+
+        inputs.forEach(input => {
+            if (!input) return;
+
+            if (input.dataset && input.dataset.skipAddAt === 'true') {
+                input.value = '';
+                return;
+            }
+
+            if (addAtEnabled) {
+                input.dataset.useAtPlaceholder = 'true';
+                if (!source) {
+                    input.value = '@';
+                    source = input;
+                } else {
+                    input.value = '';
+                }
+            } else {
+                input.value = '';
+                if (input.dataset) {
+                    delete input.dataset.useAtPlaceholder;
+                }
+            }
+        });
+
+        if (source && addAtEnabled) {
+            mirrorUsernameValue(source, '', true);
+        }
+    }
+
+    function ensureUsernamePlaceholderFromFlag() {
+        const shouldPrefill = localStorage.getItem(USERNAME_PLACEHOLDER_KEY) === 'true';
+        if (shouldPrefill) {
+            resetUsernameInputsToPlaceholder();
+        }
+    }
+
+    function applyUsernamePreferenceToAll() {
+        const inputs = getUsernameInputs();
+        inputs.forEach(input => {
+            if (!input) return;
+            if (!input.dataset.addAtBound) {
+                input.addEventListener('input', handleUsernameInput);
+                input.addEventListener('blur', handleUsernameInput);
+                input.dataset.addAtBound = 'true';
+            }
+            handleUsernameInput({ target: input });
+        });
+    }
+
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+    function init() {
+        // Only inject styles once
+        if (!document.getElementById('mode-switcher-styles')) {
+            injectStyles();
+        }
+        
+        // Always ensure Mode 2 layout exists
+        if (!document.getElementById('mode2Container')) {
+            createMode2Layout();
+        }
+
+        ensureMode1LayoutId();
+
+        if (!document.getElementById(MODE3_CONTAINER_ID)) {
+            createMode3Layout();
+        }
+        
+        // Apply current mode (this will also show settings button if needed)
+        applyMode(currentMode);
+        
+        // Don't auto-show mode switcher here - let index.html control visibility
+        // based on authentication status to prevent flash on page load
+        
+        // Setup coin tracking only once
+        if (!initialized) {
+            setupCoinTracking();
+            initialized = true;
+        }
+
+        applyUsernamePreferenceToAll();
+        ensureUsernamePlaceholderFromFlag();
+        updateCoinDisplay();
+        
+    // Ensure settings button is shown if an enhanced mode is selected and user is not logged in
+        // (Double-check after DOM is fully ready)
+        setTimeout(() => {
+            const isLoggedIn = checkIfLoggedIn();
+            if (!isLoggedIn && isEnhancedMode()) {
+                showMode2SettingsButton();
+            }
+        }, 200);
+    }
+    
+    function checkIfLoggedIn() {
+        // Check if login modal is HIDDEN (most reliable - means user is logged in)
+        const loginModal = document.getElementById('loginModal');
+        if (loginModal && loginModal.classList.contains('hidden')) {
+            // Login modal hidden = user is logged in
+            return true;
+        }
+        
+        // Check if currentUser is set (most reliable indicator)
+        if (window.currentUser) {
+            return true;
+        }
+        
+        // Check if logout button is visible (indicates user is logged in)
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn && !logoutBtn.classList.contains('hidden')) {
+            return true;
+        }
+        
+        // Also check localStorage for user token
+        const token = localStorage.getItem('token');
+        if (token) {
+            return true;
+        }
+        
+        // If we reach here, user is likely NOT logged in
+        return false;
+    }
+    
+    function hideModeSwitcher() {
+        const switcher = document.querySelector('.mode-switcher');
+        
+        // Only hide the mode switcher buttons, NOT the Mode 2 container
+        if (switcher) {
+            switcher.classList.remove('visible'); // Remove visible class instead of using style.display
+            switcher.style.display = 'none';
+        }
+        
+        // Keep Mode 2 container visible if that mode is active
+        const mode2Container = document.getElementById('mode2Container');
+        if (mode2Container && isEnhancedMode()) {
+            mode2Container.classList.add('active');
+        }
+        
+        // Hide settings button after login
+        hideMode2SettingsButton();
+    }
+    
+    function showModeSwitcher() {
+        console.log('[ModeSwitcher] showModeSwitcher called');
+        let switcher = document.querySelector('.mode-switcher');
+        console.log('[ModeSwitcher] switcher element:', switcher);
+        
+        // Create switcher if it doesn't exist yet
+        if (!switcher) {
+            console.log('[ModeSwitcher] Creating new switcher');
+            createModeSwitcher();
+            switcher = document.querySelector('.mode-switcher');
+            console.log('[ModeSwitcher] After creation:', switcher);
+        }
+        
+        if (switcher) {
+            console.log('[ModeSwitcher] Setting visible class and display flex');
+            switcher.classList.add('visible'); // Use the visible class for proper display
+            switcher.style.display = 'flex';
+            console.log('[ModeSwitcher] Final switcher state:', {
+                display: switcher.style.display,
+                visible: switcher.classList.contains('visible'),
+                computedDisplay: window.getComputedStyle(switcher).display
+            });
+        } else {
+            console.error('[ModeSwitcher] Failed to create or find switcher element!');
+        }
+        
+        // Show settings button on login page (before login) if Mode 2 is active
+        if (isEnhancedMode()) {
+            showMode2SettingsButton();
+        }
+        
+        // Mode 2 container visibility is controlled by applyMode
+        applyMode(currentMode);
+    }
+
+    function injectStyles() {
+        const style = document.createElement('style');
+        style.id = 'mode-switcher-styles';
+        style.textContent = `
+            /* Mode Switcher Button */
+            .mode-switcher {
+                position: fixed;
+                top: 60px;
+                right: 16px;
+                z-index: 10000;
+                background: white;
+                border-radius: 20px;
+                padding: 4px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                display: none; /* Hidden by default to prevent flash */
+                gap: 4px;
+            }
+            
+            .mode-switcher.visible {
+                display: flex; /* Show only when explicitly made visible */
+            }
+            
+            .mode-btn {
+                padding: 6px 16px;
+                border-radius: 16px;
+                border: none;
+                background: transparent;
+                cursor: pointer;
+                font-size: 13px;
+                font-weight: 600;
+                transition: all 0.2s;
+                color: #666;
+            }
+            
+            .mode-btn.active {
+                background: #ef4444;
+                color: white;
+            }
+            
+            /* Mode 2 Layout Container */
+            #mode2Container {
+                display: none;
+                margin: 0 8px 8px 8px;
+                background: white;
+                border-radius: 12px;
+                padding: 16px;
+            }
+            
+            #mode2Container.active {
+                display: block;
+            }
+
+            #mode2Container.mode3-enhanced {
+                animation: mode3FadeSlide 0.55s cubic-bezier(0.32, 0.72, 0, 1) both;
+                backdrop-filter: blur(14px);
+            }
+
+            #mode2Container.mode3-enhanced .mode2-content {
+                animation: mode3ContentGlow 0.7s ease-out both;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container {
+                background: radial-gradient(circle at 10% 10%, rgba(255, 255, 255, 0.96) 0%, rgba(255, 240, 240, 0.92) 60%, rgba(255, 255, 255, 0.98) 100%);
+                border: 1px solid rgba(239, 68, 68, 0.18);
+                box-shadow: 0 20px 45px rgba(239, 68, 68, 0.12);
+                padding: 22px;
+                border-radius: 20px;
+                position: relative;
+                overflow: hidden;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container::before {
+                content: "";
+                position: absolute;
+                inset: -40% 40% 60% -40%;
+                background: radial-gradient(circle at center, rgba(239, 68, 68, 0.25), transparent 60%);
+                transform: rotate(12deg);
+                opacity: 0.5;
+                pointer-events: none;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container::after {
+                content: "";
+                position: absolute;
+                inset: 55% -20% -35% 35%;
+                background: radial-gradient(circle at center, rgba(14, 165, 233, 0.16), transparent 65%);
+                transform: rotate(-18deg);
+                opacity: 0.5;
+                pointer-events: none;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-content {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 18px;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-profile {
+                width: 72px;
+                height: 72px;
+                border-radius: 20px;
+                background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+                box-shadow: 0 18px 30px rgba(15, 23, 42, 0.25);
+                position: relative;
+                animation: mode3IconPulse 2.8s ease-in-out infinite;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-profile::after {
+                content: "";
+                position: absolute;
+                inset: -8px;
+                border-radius: 24px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                opacity: 0.6;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-recharge-text {
+                font-size: 22px;
+                font-weight: 700;
+                color: #111827;
+                letter-spacing: -0.01em;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-info {
+                width: 100%;
+                gap: 10px;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-coin-counter {
+                background: rgba(255, 255, 255, 0.92);
+                padding: 10px 14px;
+                border-radius: 14px;
+                box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.16);
+                gap: 10px;
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-coin-counter:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 14px 26px rgba(239, 68, 68, 0.18);
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-coin-count {
+                font-size: 17px;
+                font-weight: 600;
+                color: #ef4444;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-username {
+                width: 100%;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-username input {
+                width: 100%;
+                padding: 14px 16px;
+                border-radius: 14px;
+                border: 1px solid rgba(148, 163, 184, 0.35);
+                background: rgba(255, 255, 255, 0.88);
+                font-size: 16px;
+                font-weight: 500;
+                color: #0f172a;
+                box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+                transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+            }
+
+            body[data-layout-mode="mode-3"] #mode2Container .mode2-username input:focus {
+                border-color: rgba(239, 68, 68, 0.6);
+                box-shadow: 0 14px 32px rgba(239, 68, 68, 0.18);
+                transform: translateY(-1px);
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option,
+            body[data-layout-mode="mode-3"] .mode2-settings-btn,
+            body[data-layout-mode="mode-3"] .recharge-button {
+                transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option {
+                background: rgba(255, 255, 255, 0.88);
+                border-radius: 18px;
+                border: 1px solid rgba(148, 163, 184, 0.22);
+                padding: 14px 0;
+                position: relative;
+                overflow: hidden;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer {
+                position: relative;
+                border-radius: 18px;
+                border: 1px solid rgba(148, 163, 184, 0.22);
+                background: linear-gradient(140deg, rgba(248, 250, 252, 0.92) 0%, rgba(241, 245, 249, 0.72) 42%, rgba(248, 113, 113, 0.12) 100%);
+                box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+                transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+                padding: 14px 0;
+                overflow: hidden;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer::before,
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer::after {
+                content: "";
+                position: absolute;
+                inset: 0;
+                background: radial-gradient(circle at top, rgba(248, 113, 113, 0.18), transparent 65%);
+                opacity: 0;
+                transition: opacity 0.3s ease;
+                pointer-events: none;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer::after {
+                background: radial-gradient(circle at bottom, rgba(56, 189, 248, 0.2), transparent 60%);
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer:hover {
+                transform: translateY(-4px) scale(1.01);
+                box-shadow: 0 22px 38px rgba(15, 23, 42, 0.16);
+                border-color: rgba(148, 163, 184, 0.36);
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer:hover::before,
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer:hover::after {
+                opacity: 1;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer.bg-red-50 {
+                background: linear-gradient(135deg, rgba(248, 113, 113, 0.25), rgba(248, 113, 113, 0.08));
+                border-color: rgba(248, 113, 113, 0.55);
+                box-shadow: 0 24px 46px rgba(248, 113, 113, 0.25);
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer.bg-red-50::before,
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer.bg-red-50::after {
+                opacity: 1;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer .flex {
+                position: relative;
+                z-index: 1;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer .text-lg {
+                font-size: 20px;
+                letter-spacing: -0.01em;
+                color: #0f172a;
+            }
+
+            body[data-layout-mode="mode-3"] ol.grid > li > div.cursor-pointer .text-xs {
+                font-size: 13px;
+                color: #475569;
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option::before {
+                content: "";
+                position: absolute;
+                inset: -40% -20% 50% -20%;
+                background: radial-gradient(circle at top, rgba(239, 68, 68, 0.16), transparent 65%);
+                opacity: 0;
+                transition: opacity 0.3s ease;
+                pointer-events: none;
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option::after {
+                content: "";
+                position: absolute;
+                inset: 45% -30% -35% -30%;
+                background: radial-gradient(circle at bottom, rgba(14, 165, 233, 0.18), transparent 65%);
+                opacity: 0;
+                transition: opacity 0.3s ease;
+                pointer-events: none;
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option:hover,
+            body[data-layout-mode="mode-3"] .mode2-settings-btn:hover,
+            body[data-layout-mode="mode-3"] .recharge-button:hover {
+                box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+                transform: translateY(-3px);
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option:hover::before,
+            body[data-layout-mode="mode-3"] .coin-option:hover::after {
+                opacity: 1;
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option:active,
+            body[data-layout-mode="mode-3"] .mode2-settings-btn:active,
+            body[data-layout-mode="mode-3"] .recharge-button:active {
+                transform: scale(0.96);
+                box-shadow: 0 16px 28px rgba(239, 68, 68, 0.22);
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option .text-lg {
+                font-size: 20px;
+                letter-spacing: -0.01em;
+            }
+
+            body[data-layout-mode="mode-3"] .coin-option .text-xs {
+                font-size: 13px;
+                color: #475569;
+            }
+
+            body[data-layout-mode="mode-3"] .mode2-settings-btn {
+                background: linear-gradient(135deg, #ef4444 0%, #f97316 100%);
+                box-shadow: 0 16px 32px rgba(239, 68, 68, 0.28);
+            }
+
+            body[data-layout-mode="mode-3"] .mode2-settings-btn:hover {
+                background: linear-gradient(135deg, #dc2626 0%, #fb923c 100%);
+            }
+
+            body[data-layout-mode="mode-3"] .mode2-settings-btn svg {
+                filter: drop-shadow(0 4px 8px rgba(255, 255, 255, 0.18));
+            }
+            
+            .mode2-content {
+                display: flex;
+                gap: 12px;
+                align-items: center;
+            }
+            
+            .mode2-profile {
+                flex-shrink: 0;
+            }
+            
+            .mode2-info {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                justify-content: center;
+            }
+            
+            .mode2-recharge-text {
+                font-size: 18px;
+                font-weight: 600;
+                color: #000;
+            }
+            
+            .mode2-coin-counter {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                background: transparent;
+                padding: 0;
+                border: none;
+                width: fit-content;
+            }
+            
+            .mode2-coin-count {
+                font-size: 14px;
+                font-weight: 400;
+                color: #6b7280;
+            }
+            
+            .mode2-username {
+                width: 100%;
+                margin-top: 4px;
+            }
+            
+            .mode2-username input {
+                width: 100%;
+                padding: 10px 12px;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                font-size: 14px;
+                transition: border-color 0.2s;
+            }
+            
+            .mode2-username input:focus {
+                outline: none;
+                border-color: #ef4444;
+                box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+            }
+            
+            /* Mode 2 Avatar Image Visibility */
+            #mode2TiktokIconContainer {
+                position: relative;
+            }
+
+            #mode2TiktokIconContainer #mode2UploadedImage {
+                position: absolute !important;
+                top: 0;
+                left: 0;
+                width: 100% !important;
+                height: 100% !important;
+                border-radius: 9999px !important;
+                object-fit: cover !important;
+            }
+
+            #mode2TiktokIconContainer.has-image #mode2UploadedImage {
+                display: block !important;
+                z-index: 2 !important;
+            }
+
+            #mode2TiktokIconContainer.has-image #mode2TiktokIcon {
+                display: none !important;
+                z-index: 1 !important;
+            }
+
+            #mode2TiktokIconContainer #mode2UploadedImage:not(.hidden) {
+                display: block !important;
+                z-index: 2 !important;
+            }
+            
+            #mode2TiktokIconContainer #mode2TiktokIcon {
+                z-index: 1;
+            }
+
+            /* Mode 2 Profile Preview */
+            #mode2ProfilePreview {
+                display: none;
+                background: white;
+                border-radius: 12px;
+                padding: 16px;
+                margin-top: 12px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+                border: 1px solid #f3f4f6;
+                width: 100%;
+            }
+            
+            #mode2ProfilePreview.show {
+                display: flex !important;
+            }
+            
+            #mode2ProfilePreview:not(.hidden) {
+                display: flex !important;
+                align-items: center;
+                gap: 12px;
+            }
+            
+            #mode2ProfilePreview img {
+                flex-shrink: 0;
+            }
+            
+            /* Remove min-height transitions - only expand when profile is shown */
+            #mode2Container {
+                transition: all 0.3s ease;
+            }
+            
+            /* Hide original profile section in Mode 2 */
+            body[data-layout-mode="mode-2"] .flex.items-center.px-4.mx-2.bg-white.rounded-lg,
+            body[data-layout-mode="mode-3"] .flex.items-center.px-4.mx-2.bg-white.rounded-lg {
+                display: none !important;
+            }
+            
+            /* Mode 2 Settings Button */
+            .mode2-settings-btn {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-top: 12px;
+                padding: 8px 16px;
+                background: #ef4444;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .mode2-settings-btn:hover {
+                background: #dc2626;
+                transform: translateY(-1px);
+            }
+            
+            .mode2-settings-btn.hidden {
+                display: none;
+            }
+            
+            /* Mode 2 Settings Modal */
+            #mode2SettingsModal {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.5);
+                display: none;
+                align-items: center;
+                justify-content: center;
+                z-index: 1000;
+            }
+            
+            #mode2SettingsModal.active {
+                display: flex;
+            }
+            
+            .mode2-settings-content {
+                background: white;
+                border-radius: 16px;
+                padding: 24px;
+                max-width: 400px;
+                width: 90%;
+                max-height: 90vh;
+                overflow-y: auto;
+            }
+            
+            .mode2-settings-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+            }
+            
+            .mode2-settings-title {
+                font-size: 20px;
+                font-weight: 700;
+                color: #000;
+            }
+            
+            .mode2-settings-close {
+                background: none;
+                border: none;
+                font-size: 24px;
+                color: #666;
+                cursor: pointer;
+                padding: 0;
+                width: 32px;
+                height: 32px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 50%;
+                transition: background 0.2s;
+            }
+            
+            .mode2-settings-close:hover {
+                background: #f3f4f6;
+            }
+            
+            .mode2-settings-field {
+                margin-bottom: 20px;
+            }
+            
+            .mode2-settings-label {
+                display: block;
+                font-size: 14px;
+                font-weight: 600;
+                color: #374151;
+                margin-bottom: 8px;
+            }
+            
+            .mode2-settings-input {
+                width: 100%;
+                padding: 12px;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                font-size: 14px;
+                transition: border-color 0.2s;
+            }
+            
+            .mode2-settings-input:focus {
+                outline: none;
+                border-color: #ef4444;
+                box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+            }
+            
+            .mode2-settings-save {
+                width: 100%;
+                padding: 12px;
+                background: #ef4444;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+            
+            .mode2-settings-save:hover {
+                background: #dc2626;
+            }
+            
+            /* Toggle Switch Styles */
+            .mode2-settings-toggle {
+                position: relative;
+                display: inline-block;
+                width: 48px;
+                height: 24px;
+            }
+            
+            .mode2-settings-toggle input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            
+            .mode2-settings-toggle-slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #ccc;
+                transition: .4s;
+                border-radius: 24px;
+            }
+            
+            .mode2-settings-toggle-slider:before {
+                position: absolute;
+                content: "";
+                height: 18px;
+                width: 18px;
+                left: 3px;
+                bottom: 3px;
+                background-color: white;
+                transition: .4s;
+                border-radius: 50%;
+            }
+            
+            .mode2-settings-toggle input:checked + .mode2-settings-toggle-slider {
+                background-color: #ef4444;
+            }
+            
+            .mode2-settings-toggle input:checked + .mode2-settings-toggle-slider:before {
+                transform: translateX(24px);
+            }
+            
+            .mode2-settings-hint {
+                margin-top: 6px;
+                font-size: 12px;
+                color: #6b7280;
+            }
+            
+            .mode2-settings-hint {
+                font-size: 12px;
+                color: #6b7280;
+                margin-top: 4px;
+            }
+
+            @keyframes mode3FadeSlide {
+                from {
+                    opacity: 0;
+                    transform: translateY(20px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            @keyframes mode3ContentGlow {
+                0% {
+                    opacity: 0;
+                    transform: translateY(8px);
+                    box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+                }
+                70% {
+                    opacity: 1;
+                    transform: translateY(-4px);
+                    box-shadow: 0 18px 40px rgba(239, 68, 68, 0.12);
+                }
+                100% {
+                    opacity: 1;
+                    transform: translateY(0);
+                    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+                }
+            }
+
+            @keyframes mode3IconPulse {
+                0%, 100% {
+                    transform: scale(1);
+                    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.25);
+                }
+                40% {
+                    transform: scale(1.04) translateY(-2px);
+                    box-shadow: 0 24px 45px rgba(15, 23, 42, 0.3);
+                }
+                70% {
+                    transform: scale(0.98) translateY(1px);
+                    box-shadow: 0 16px 24px rgba(15, 23, 42, 0.2);
+                }
+            }
+
+            #mode3Container {
+                display: none;
+                min-height: 100vh;
+                background: #f8fafc;
+            }
+
+            #mode3Container.active {
+                display: flex;
+                flex-direction: column;
+            }
+
+            #mode3Container .mode3-wrapper {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+            }
+
+            #mode3Container .mode3-scroll {
+                flex: 1;
+                overflow-y: auto;
+                padding: 16px 20px 96px;
+            }
+
+            #mode3Container .mode3-card {
+                background: #ffffff;
+                border-radius: 20px;
+                border: 1px solid rgba(226, 232, 240, 0.85);
+                box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+                padding: 18px;
+                margin-bottom: 18px;
+            }
+
+            #mode3Container .mode3-avatar {
+                position: relative;
+                overflow: hidden;
+                border-radius: 9999px;
+            }
+
+            #mode3Container .mode3-avatar img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                display: none;
+                border-radius: 9999px;
+            }
+
+            #mode3Container .mode3-avatar.has-image #mode3UploadedImage {
+                display: block !important;
+            }
+
+            #mode3Container .mode3-avatar.has-image #mode3TiktokIcon {
+                display: none !important;
+            }
+
+            #mode3Container #mode3UploadedImage:not(.hidden) {
+                display: block !important;
+            }
+
+            #mode3Container .mode3-input {
+                width: 100%;
+                border: 1px solid rgba(148, 163, 184, 0.35);
+                border-radius: 14px;
+                padding: 12px 14px;
+                font-size: 16px;
+                font-weight: 500;
+                color: #0f172a;
+                transition: border-color 0.2s ease, box-shadow 0.2s ease;
+                background: rgba(255, 255, 255, 0.96);
+            }
+
+            #mode3Container .mode3-input:focus {
+                border-color: rgba(239, 68, 68, 0.6);
+                box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+                outline: none;
+            }
+
+            #mode3Container .mode3-preview {
+                border-radius: 16px;
+                border: 1px solid rgba(226, 232, 240, 0.9);
+                padding: 14px;
+                margin-top: 12px;
+                display: none;
+            }
+
+            #mode3Container .mode3-preview.show {
+                display: flex !important;
+            }
+
+            #mode3Container .mode3-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 24px 20px 0;
+                margin-bottom: 12px;
+            }
+
+            #mode3Container .mode3-header-title {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+            #mode3Container .mode3-header-icon {
+                width: 44px;
+                height: 44px;
+                border-radius: 16px;
+                background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 12px 24px rgba(15, 23, 42, 0.22);
+            }
+
+            #mode3Container .mode3-header-icon svg {
+                width: 22px;
+                height: 22px;
+            }
+
+            #mode3Container .mode3-header-text {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+
+            #mode3Container .mode3-header-text .mode3-header-label {
+                font-size: 20px;
+                font-weight: 700;
+                letter-spacing: -0.01em;
+                color: #0f172a;
+            }
+
+            #mode3Container .mode3-header-text .mode3-header-subtle {
+                font-size: 12px;
+                color: #64748b;
+            }
+
+            #mode3Container .mode3-header-actions {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            #mode3Container .mode3-icon-btn {
+                width: 38px;
+                height: 38px;
+                border-radius: 14px;
+                border: 1px solid rgba(203, 213, 225, 0.65);
+                background: #ffffff;
+                color: #0f172a;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+            }
+
+            #mode3Container .mode3-icon-btn:hover {
+                transform: translateY(-2px);
+                border-color: rgba(148, 163, 184, 0.65);
+                box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+                background: rgba(248, 250, 252, 0.96);
+            }
+
+            #mode3Container .mode3-icon-btn svg {
+                width: 18px;
+                height: 18px;
+            }
+
+            #mode3Container .mode3-icon-btn.mode3-logout-btn {
+                border-color: rgba(239, 68, 68, 0.35);
+                color: #ef4444;
+            }
+
+            #mode3Container .mode3-icon-btn.mode3-logout-btn:hover {
+                background: rgba(239, 68, 68, 0.08);
+                border-color: rgba(239, 68, 68, 0.5);
+                box-shadow: 0 12px 24px rgba(239, 68, 68, 0.18);
+            }
+
+            #mode3Container .mode3-coin {
+                border-radius: 18px;
+                border: 1px solid rgba(203, 213, 225, 0.9);
+                background: #ffffff;
+                padding: 14px 16px;
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 14px;
+                transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+            }
+
+            #mode3Container .mode3-coin.mode3-selected {
+                border-color: rgba(239, 68, 68, 0.75);
+                box-shadow: 0 12px 26px rgba(239, 68, 68, 0.18);
+                transform: translateY(-3px);
+            }
+
+            #mode3Container .mode3-coin:hover {
+                border-color: rgba(239, 68, 68, 0.42);
+            }
+
+            #mode3Container .mode3-coin .mode3-coin-icon {
+                width: 42px;
+                height: 42px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            #mode3Container .mode3-coin .mode3-coin-icon svg {
+                width: 22px;
+                height: 22px;
+            }
+
+            #mode3Container .mode3-coin .mode3-coin-text {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 2px;
+            }
+
+            #mode3Container .mode3-coin .mode3-coin-value {
+                font-size: 18px;
+                font-weight: 700;
+                color: #0f172a;
+            }
+
+            #mode3Container .mode3-coin .mode3-coin-price {
+                font-size: 13px;
+                color: #475569;
+            }
+
+            #mode3Container .mode3-selection-hint {
+                font-size: 13px;
+                color: #64748b;
+                margin-top: 8px;
+            }
+
+            #mode3Container .mode3-footer {
+                position: sticky;
+                bottom: 0;
+                background: linear-gradient(180deg, rgba(248, 250, 252, 0.65) 0%, #f8fafc 65%);
+                padding: 18px 20px 24px;
+                box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.04);
+            }
+
+            #mode3Container .mode3-footer-actions {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            #mode3Container .mode3-buy-btn {
+                width: 100%;
+                border-radius: 16px;
+                padding: 14px;
+                background: linear-gradient(135deg, #ef4444 10%, #f97316 100%);
+                color: #ffffff;
+                font-size: 16px;
+                font-weight: 600;
+                border: none;
+                transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+            }
+
+            #mode3Container .mode3-buy-btn:disabled {
+                opacity: 0.55;
+                cursor: not-allowed;
+                box-shadow: none;
+                transform: none;
+            }
+
+            #mode3Container .mode3-buy-btn:not(:disabled):hover {
+                transform: translateY(-2px);
+                box-shadow: 0 16px 32px rgba(239, 68, 68, 0.25);
+            }
+
+            #mode3Container .mode3-total {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                color: #0f172a;
+                padding: 8px 12px;
+                border-radius: 12px;
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid rgba(148, 163, 184, 0.28);
+                box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+            }
+
+            #mode3Container .mode3-total-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            #mode3Container .mode3-total-icon svg {
+                width: 18px;
+                height: 18px;
+            }
+
+            #mode3Container .mode3-logout-btn svg {
+                width: 18px;
+                height: 18px;
+            }
+
+            #mode3Container .mode3-settings-btn {
+                display: none;
+                margin-top: 16px;
+                width: 100%;
+                border-radius: 12px;
+                background: #111827;
+                color: #ffffff;
+                font-weight: 500;
+                padding: 10px 16px;
+                border: none;
+                transition: opacity 0.18s ease, transform 0.18s ease;
+            }
+
+            #mode3Container .mode3-settings-card {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
+
+            #mode3Container .mode3-settings-card .mode3-settings-btn {
+                margin-top: 0;
+            }
+
+            #mode3Container .mode3-settings-btn:hover {
+                transform: translateY(-1px);
+                opacity: 0.92;
+            }
+
+            #mode3Container .mode3-settings-btn.visible {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function createModeSwitcher() {
+        const switcher = document.createElement('div');
+        switcher.className = 'mode-switcher visible'; // Add 'visible' class when creating for non-logged-in users
+        switcher.innerHTML = `
+            <button class="mode-btn ${currentMode === MODE_1 ? 'active' : ''}" data-mode="${MODE_1}">
+                Mode 1
+            </button>
+            <button class="mode-btn ${currentMode === MODE_2 ? 'active' : ''}" data-mode="${MODE_2}">
+                Mode 2
+            </button>
+            <button class="mode-btn ${currentMode === MODE_3 ? 'active' : ''}" data-mode="${MODE_3}">
+                Mode 3
+            </button>
+        `;
+
+        document.body.appendChild(switcher);
+
+        // Add click handlers
+        switcher.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const mode = this.getAttribute('data-mode');
+                switchMode(mode);
+            });
+        });
+    }
+
+    function ensureMode1LayoutId() {
+        if (document.getElementById('mode1Layout')) {
+            return;
+        }
+
+        const main = document.querySelector('main');
+        if (!main) {
+            return;
+        }
+
+        const firstChild = main.firstElementChild;
+        if (firstChild && !firstChild.id) {
+            firstChild.id = 'mode1Layout';
+        }
+    }
+
+    function createMode2Layout() {
+        const container = document.createElement('div');
+        container.id = 'mode2Container';
+        
+        // Get custom recharge text from localStorage or use default
+        const customRechargeText = localStorage.getItem('mode2_recharge_text') || 'Recharge';
+        
+        // Get references to original elements
+        const originalIconContainer = document.getElementById('tiktokIconContainer');
+        const originalUsernameInput = document.querySelector('input[data-slot="input"][placeholder="Type"]');
+        
+        container.innerHTML = `
+            <div class="mode2-content">
+                <div class="mode2-profile">
+                    <div id="mode2TiktokIconContainer" class="w-9 h-9 bg-black rounded-full flex items-center justify-center cursor-pointer hover:opacity-80 transition-opacity" title="Click to upload image">
+                        <svg id="mode2TiktokIcon" xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 24 24">
+                            <path fill="#ffffff" d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74a2.89 2.89 0 0 1 2.31-4.64a2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"></path>
+                        </svg>
+                        <img id="mode2UploadedImage" src="" alt="Uploaded" class="hidden w-full h-full object-cover rounded-full">
+                    </div>
+                </div>
+                <div class="mode2-info">
+                    <div class="mode2-recharge-text" id="mode2RechargeText">${customRechargeText}</div>
+                    <div class="mode2-coin-counter">
+                        <svg width="16" height="16" viewBox="0 0 48 48" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                            <g clip-path="url(#Icon_Color-Tiktok_Coin_svg__a)">
+                                <path d="M48 24a24 24 0 1 1-48 0 24 24 0 0 1 48 0Z" fill="#FFB84D"></path>
+                                <path d="M47 24a23 23 0 1 1-46 0 23 23 0 0 1 46 0Z" fill="#FFDE55"></path>
+                                <path d="M42 24a18 18 0 1 0-36 0 18 18 0 0 1 36 0Z" fill="#F7A300"></path>
+                                <path d="M42 24a18 18 0 1 0-36 0 18 18 0 0 1 36 0Z" fill="#F7A80F"></path>
+                                <path d="M41.94 25.5a18 18 0 1 0-35.88 0 18 18 0 0 1 35.88 0Z" fill="#E88B00"></path>
+                                <path d="M41.94 25.5a18 18 0 1 0-35.88 0 18 18 0 0 1 35.88 0Z" fill="#F09207"></path>
+                                <path d="M34.74 17.77v5.86c-2.06 0-4.05-.44-5.81-1.55v7.2a7.79 7.79 0 0 1-7.84 7.75 7.79 7.79 0 0 1-7.8-8.35 7.79 7.79 0 0 1 9.19-8.24v6c-.47-.13-.9-.26-1.39-.26a3.14 3.14 0 0 0-3.09 2.5 3.14 3.14 0 0 0 3.1 2.5c1.74 0 3.14-1.4 3.14-3.11V12.03h4.69a5.6 5.6 0 0 0 5.81 5.74Z" fill="#F09207"></path>
+                                <path d="M34.34 18.18a5.78 5.78 0 0 1-5.82-5.74h-3.87v15.63c0 1.94-1.6 3.5-3.56 3.5a3.53 3.53 0 0 1-3.55-3.5 3.53 3.53 0 0 1 4.52-3.38v-3.9a7.38 7.38 0 0 0-8.4 7.28 7.38 7.38 0 0 0 7.43 7.34c4.1 0 7.43-3.29 7.43-7.34v-7.98a9.73 9.73 0 0 0 5.82 1.92v-3.83Z" fill="#fff"></path>
+                            </g>
+                            <defs><clipPath id="Icon_Color-Tiktok_Coin_svg__a"><path fill="#fff" d="M0 0h48v48H0z"></path></clipPath></defs>
+                        </svg>
+                        <span class="mode2-coin-count" id="mode2CoinCounter">${totalCoins.toLocaleString()}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="mode2-username">
+                <input type="text" id="mode2UsernameInput" placeholder="Type" value="">
+            </div>
+            <div id="mode2ProfilePreview" class="mt-3 bg-white rounded-lg px-4 py-3 flex items-center gap-3 shadow-[0_4px_12px_rgba(0,0,0,0.08)] hidden">
+                <img id="mode2ProfileAvatar" src="" alt="Profile" class="w-12 h-12 rounded-full object-cover">
+                <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span id="mode2ProfileHandle" class="text-sm font-semibold text-black"></span>
+                    </div>
+                    <div id="mode2ProfileNickname" class="text-xs text-gray-600 mb-0.5"></div>
+                    <div id="mode2ProfileFollowers" class="text-xs text-gray-500"></div>
+                </div>
+            </div>
+            <button id="mode2SettingsBtn" class="mode2-settings-btn hidden" title="Mode 2 Settings">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M12 1v6m0 6v6m6-10.5l-5.2 3m-5.6 3l-5.2 3m16.8-12l-5.2 3m-5.6 3l-5.2 3"></path>
+                    <path d="M19.4 15c.7-1.2 1.1-2.6 1.1-4s-.4-2.8-1.1-4m-14.8 0C3.9 8.2 3.5 9.6 3.5 11s.4 2.8 1.1 4"></path>
+                </svg>
+                Settings
+            </button>
+        `;
+
+        // Insert after header
+        const header = document.querySelector('header');
+        if (header && header.nextElementSibling) {
+            header.parentNode.insertBefore(container, header.nextElementSibling);
+        }
+
+        // Set up synchronization
+        syncProfileData();
+        
+        // Set up settings button
+        setupMode2Settings();
+        applyUsernamePreferenceToAll();
+        ensureUsernamePlaceholderFromFlag();
+    }
+
+    function createMode3Layout() {
+        if (document.getElementById(MODE3_CONTAINER_ID)) {
+            mode3Elements.container = document.getElementById(MODE3_CONTAINER_ID);
+            return;
+        }
+
+        ensureMode1LayoutId();
+
+        const main = document.querySelector('main');
+        if (!main) {
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.id = MODE3_CONTAINER_ID;
+        container.className = 'mode3-container hidden';
+
+        const coinIconSvg = `
+            <svg width="20" height="20" viewBox="0 0 48 48" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                <g clip-path="url(#Icon_Color-Tiktok_Coin_svg__a)">
+                    <path d="M48 24a24 24 0 1 1-48 0 24 24 0 0 1 48 0Z" fill="#FFB84D"></path>
+                    <path d="M47 24a23 23 0 1 1-46 0 23 23 0 0 1 46 0Z" fill="#FFDE55"></path>
+                    <path d="M42 24a18 18 0 1 0-36 0 18 18 0 0 1 36 0Z" fill="#F7A300"></path>
+                    <path d="M42 24a18 18 0 1 0-36 0 18 18 0 0 1 36 0Z" fill="#F7A80F"></path>
+                    <path d="M41.94 25.5a18 18 0 1 0-35.88 0 18 18 0 0 1 35.88 0Z" fill="#E88B00"></path>
+                    <path d="M41.94 25.5a18 18 0 1 0-35.88 0 18 18 0 0 1 35.88 0Z" fill="#F09207"></path>
+                    <path d="M34.74 17.77v5.86c-2.06 0-4.05-.44-5.81-1.55v7.2a7.79 7.79 0 0 1-7.84 7.75 7.79 7.79 0 0 1-7.8-8.35 7.79 7.79 0 0 1 9.19-8.24v6c-.47-.13-.9-.26-1.39-.26a3.14 3.14 0 0 0-3.09 2.5 3.14 3.14 0 0 0 3.1 2.5c1.74 0 3.14-1.4 3.14-3.11V12.03h4.69a5.6 5.6 0 0 0 5.81 5.74Z" fill="#F09207"></path>
+                    <path d="M34.34 18.18a5.78 5.78 0 0 1-5.82-5.74h-3.87v15.63c0 1.94-1.6 3.5-3.56 3.5a3.53 3.53 0 0 1-3.55-3.5 3.53 3.53 0 0 1 4.52-3.38v-3.9a7.38 7.38 0 0 0-8.4 7.28 7.38 7.38 0 0 0 7.43 7.34c4.1 0 7.43-3.29 7.43-7.34v-7.98a9.73 9.73 0 0 0 5.82 1.92v-3.83Z" fill="#fff"></path>
+                </g>
+                <defs><clipPath id="Icon_Color-Tiktok_Coin_svg__a"><path fill="#fff" d="M0 0h48v48H0z"></path></clipPath></defs>
+            </svg>
+        `.trim();
+
+        const coinButtonsHtml = MODE3_COIN_PACKAGES.map((item, index) => {
+            if (index === MODE3_CUSTOM_INDEX) {
+                return `
+                    <button
+                        type="button"
+                        class="mode3-coin"
+                        data-mode3-coin="custom"
+                        data-mode3-index="${index}"
+                        data-mode3-custom="true"
+                    >
+                        <span class="mode3-coin-icon" aria-hidden="true">
+                            ${coinIconSvg}
+                        </span>
+                        <span class="mode3-coin-text">
+                            <span class="mode3-coin-value">Custom</span>
+                            <span class="mode3-coin-price text-gray-500">Enter amount</span>
+                        </span>
+                    </button>
+                `;
+            }
+
+            return `
+                <button
+                    type="button"
+                    class="mode3-coin"
+                    data-mode3-coin="${item.coins}"
+                    data-mode3-price="${item.price}"
+                    data-mode3-index="${index}"
+                >
+                    <span class="mode3-coin-icon" aria-hidden="true">
+                        ${coinIconSvg}
+                    </span>
+                    <span class="mode3-coin-text">
+                        <span class="mode3-coin-value">${item.coins.toLocaleString()} Coins</span>
+                        <span class="mode3-coin-price">$${item.price}</span>
+                    </span>
+                </button>
+            `;
+        }).join('');
+
+        container.innerHTML = `
+            <div class="mode3-wrapper">
+                <div class="mode3-header">
+                    <div class="mode3-header-title">
+                        <div class="mode3-header-icon">
+                            ${coinIconSvg}
+                        </div>
+                        <div class="mode3-header-text">
+                            <span class="mode3-header-label">Wallet</span>
+                            <span class="mode3-header-subtle">Quick access</span>
+                        </div>
+                    </div>
+                    <div class="mode3-header-actions">
+                        <button type="button" class="mode3-icon-btn" title="More options" aria-label="More options">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="1"></circle>
+                                <circle cx="19" cy="12" r="1"></circle>
+                                <circle cx="5" cy="12" r="1"></circle>
+                            </svg>
+                        </button>
+                        <button type="button" class="mode3-icon-btn" title="Help center" aria-label="Help center">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                                <path d="M12 17h.01"></path>
+                            </svg>
+                        </button>
+                        <button id="mode3LogoutBtn" type="button" class="mode3-icon-btn mode3-logout-btn hidden" title="Logout" aria-label="Logout">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                <path d="m16 17 5-5-5-5"></path>
+                                <line x1="12" y1="12" x2="21" y2="12"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="mode3-scroll">
+                    <section class="mode3-card">
+                        <div class="flex items-center gap-4">
+                            <div
+                                id="mode3TiktokIconContainer"
+                                class="mode3-avatar w-16 h-16 bg-black text-white flex items-center justify-center cursor-pointer hover:opacity-90 transition-opacity"
+                                title="Click to upload image"
+                            >
+                                <svg id="mode3TiktokIcon" xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24">
+                                    <path fill="#ffffff" d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74a2.89 2.89 0 0 1 2.31-4.64a2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"></path>
+                                </svg>
+                                <img id="mode3UploadedImage" src="" alt="Profile" class="hidden w-full h-full object-cover rounded-full">
+                            </div>
+                            <div class="flex-1">
+                                <div class="text-sm font-medium text-gray-500 mb-1">Account</div>
+                                <input
+                                    type="text"
+                                    id="mode3UsernameInput"
+                                    class="mode3-input"
+                                    placeholder="Type"
+                                    autocomplete="off"
+                                />
+                                <div class="mode3-total mt-3">
+                                    <span class="mode3-total-icon" aria-hidden="true">
+                                        ${coinIconSvg}
+                                    </span>
+                                    <span id="mode3CoinCounter">${getStoredCoinTotal().toLocaleString()}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="mode3ProfilePreview" class="mode3-preview mt-4 items-center gap-3 hidden">
+                            <img id="mode3ProfileAvatar" src="" alt="Profile" class="w-12 h-12 rounded-full object-cover">
+                            <div class="flex-1">
+                                <div id="mode3ProfileHandle" class="text-sm font-semibold text-gray-900"></div>
+                                <div id="mode3ProfileNickname" class="text-xs text-gray-600 mt-0.5"></div>
+                                <div id="mode3ProfileFollowers" class="text-xs text-gray-500 mt-1"></div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="mode3-card">
+                        <div class="flex items-center mb-3">
+                            <h2 class="text-base font-semibold text-gray-900">Choose Coins</h2>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3" id="mode3CoinGrid">
+                            ${coinButtonsHtml}
+                        </div>
+                        <div class="mode3-selection-hint" id="${MODE3_SELECTION_TEXT_ID}">Select a coin package to see price.</div>
+                    </section>
+
+                    <section class="mode3-card mode3-settings-card">
+                        <button id="mode3SettingsBtn" class="mode3-settings-btn">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82A1.65 1.65 0 0 0 3 13H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 7a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 8 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                            </svg>
+                            Settings
+                        </button>
+                    </section>
+                </div>
+                <div class="mode3-footer">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-sm font-medium text-gray-700">Selected</span>
+                        <span id="mode3SelectionSummary" class="text-sm font-semibold text-gray-900">None</span>
+                    </div>
+                    <div class="mode3-footer-actions">
+                        <button id="mode3BuyButton" class="mode3-buy-btn" disabled>Choose a package</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        main.appendChild(container);
+
+        mode3Elements.container = container;
+        mode3Elements.coinButtons = Array.from(container.querySelectorAll('[data-mode3-coin]'));
+        mode3Elements.buyButton = container.querySelector('#mode3BuyButton');
+        mode3Elements.selectionText = container.querySelector(`#${MODE3_SELECTION_TEXT_ID}`);
+        mode3Elements.selectionSummary = container.querySelector('#mode3SelectionSummary');
+        mode3Elements.coinCounter = container.querySelector('#mode3CoinCounter');
+        mode3Elements.settingsBtn = container.querySelector('#mode3SettingsBtn');
+        mode3Elements.logoutBtn = container.querySelector('#mode3LogoutBtn');
+
+        setupMode3Interactions();
+        applyUsernamePreferenceToAll();
+        ensureUsernamePlaceholderFromFlag();
+        syncProfileData();
+        updateMode3LogoutButtonVisibility();
+    }
+
+    function syncProfileData() {
+        const originalIcon = document.getElementById('tiktokIcon');
+        const originalImage = document.getElementById('uploadedImage');
+        const originalInput = document.querySelector('input[data-slot="input"][placeholder="Type"]');
+        const originalIconContainer = document.getElementById('tiktokIconContainer');
+        
+        const mode2Icon = document.getElementById('mode2TiktokIcon');
+        const mode2Image = document.getElementById('mode2UploadedImage');
+        const mode2Input = document.getElementById('mode2UsernameInput');
+        const mode2IconContainer = document.getElementById('mode2TiktokIconContainer');
+        const mode3Icon = document.getElementById('mode3TiktokIcon');
+        const mode3Image = document.getElementById('mode3UploadedImage');
+        const mode3Input = document.getElementById('mode3UsernameInput');
+        const mode3IconContainer = document.getElementById('mode3TiktokIconContainer');
+
+        if (!originalInput || !mode2Input) {
+            updateMode3LogoutButtonVisibility();
+            return;
+        }
+
+        // Sync initial values
+        mode2Input.value = originalInput.value;
+        if (mode3Input) {
+            mode3Input.value = originalInput.value;
+        }
+        
+        // Ensure Mode 2 profile preview is hidden by default (only show when username lookup happens)
+        const mode2Preview = document.getElementById('mode2ProfilePreview');
+        if (mode2Preview) {
+            mode2Preview.classList.add('hidden');
+        }
+        
+        // Load image from localStorage for Mode 2 (instant loading)
+        // Try multiple sources for current username
+        const currentUser = window.currentUser || 
+                          localStorage.getItem('tiktok_username') || 
+                          localStorage.getItem('currentUser') ||
+                          originalInput.value.trim();
+        
+        console.log('Mode 2 syncProfileData - currentUser:', currentUser);
+        
+        if (currentUser) {
+            const cachedImage = localStorage.getItem(`tiktok_avatar_${currentUser}`);
+            
+            if (cachedImage) {
+                // Image exists in cache - load it instantly (no preload needed)
+                mode2Icon.classList.add('hidden');
+                mode2Image.src = cachedImage;
+                mode2Image.classList.remove('hidden');
+                if (mode2IconContainer) {
+                    mode2IconContainer.classList.add('ready');
+                    mode2IconContainer.classList.add('has-image');
+                }
+                console.log('Mode 2: Loaded cached image for', currentUser);
+            } else {
+                // No cached image - check if Mode 1 has an image we can use
+                if (originalImage && !originalImage.classList.contains('hidden') && originalImage.src) {
+                    mode2Icon.classList.add('hidden');
+                    mode2Image.src = originalImage.src;
+                    mode2Image.classList.remove('hidden');
+                    if (mode2IconContainer) {
+                        mode2IconContainer.classList.add('ready');
+                        mode2IconContainer.classList.add('has-image');
+                    }
+                    console.log('Mode 2: Using Mode 1 image');
+                } else {
+                    // Show default icon
+                    mode2Icon.classList.remove('hidden');
+                    mode2Image.classList.add('hidden');
+                    if (mode2IconContainer) {
+                        mode2IconContainer.classList.remove('has-image');
+                        mode2IconContainer.classList.add('ready');
+                    }
+                    console.log('Mode 2: No image found - showing default icon');
+                }
+            }
+        } else {
+            mode2Icon.classList.remove('hidden');
+            mode2Image.classList.add('hidden');
+            if (mode2IconContainer) {
+                mode2IconContainer.classList.remove('has-image');
+                mode2IconContainer.classList.add('ready');
+            }
+            console.log('Mode 2: No user - showing default icon');
+        }
+
+        if (mode3IconContainer) {
+            mode3IconContainer.classList.add('ready');
+        }
+
+        if (mode3Input && !mode3Input.dataset.mode3SyncBound) {
+            mode3Input.dataset.mode3SyncBound = 'true';
+            mode3Input.addEventListener('input', (e) => {
+                if (originalInput && originalInput.value !== e.target.value) {
+                    originalInput.value = e.target.value;
+                    handleUsernameInput({ target: originalInput });
+                }
+            });
+        }
+
+        if (mode3Image && mode3Icon) {
+            if (currentUser) {
+                const cachedImage = localStorage.getItem(`tiktok_avatar_${currentUser}`);
+                if (cachedImage) {
+                    mode3Icon.classList.add('hidden');
+                    mode3Image.src = cachedImage;
+                    mode3Image.classList.remove('hidden');
+                    if (mode3IconContainer) {
+                        mode3IconContainer.classList.add('has-image');
+                    }
+                } else if (originalImage && !originalImage.classList.contains('hidden') && originalImage.src) {
+                    mode3Icon.classList.add('hidden');
+                    mode3Image.src = originalImage.src;
+                    mode3Image.classList.remove('hidden');
+                    if (mode3IconContainer) {
+                        mode3IconContainer.classList.add('has-image');
+                    }
+                } else {
+                    mode3Icon.classList.remove('hidden');
+                    mode3Image.classList.add('hidden');
+                    if (mode3IconContainer) {
+                        mode3IconContainer.classList.remove('has-image');
+                    }
+                }
+            } else {
+                mode3Icon.classList.remove('hidden');
+                mode3Image.classList.add('hidden');
+                if (mode3IconContainer) {
+                    mode3IconContainer.classList.remove('has-image');
+                }
+            }
+        }
+
+        // Two-way username sync
+        if (!mode2Input.dataset.mode2SyncBound) {
+            mode2Input.dataset.mode2SyncBound = 'true';
+            mode2Input.addEventListener('input', (e) => {
+                originalInput.value = e.target.value;
+                if (mode3Input) {
+                    mode3Input.value = e.target.value;
+                }
+                handleUsernameInput({ target: originalInput });
+            });
+        }
+
+        originalInput.addEventListener('input', (e) => {
+            mode2Input.value = e.target.value;
+            if (mode3Input) {
+                mode3Input.value = e.target.value;
+            }
+        });
+
+        // Sync image uploads - Mode 2 click triggers upload for all modes
+        if (mode2IconContainer && !mode2IconContainer.dataset.uploadBound) {
+            mode2IconContainer.dataset.uploadBound = 'true';
+            mode2IconContainer.addEventListener('click', () => {
+                const fileInput = document.getElementById('imageUpload');
+                if (fileInput) {
+                    fileInput.click();
+                    console.log('Mode 2 profile clicked - triggering file upload');
+                }
+            });
+        }
+
+        // Note: Removed MutationObserver to prevent interference with direct UI updates during file upload
+        applyUsernamePreferenceToAll();
+        ensureUsernamePlaceholderFromFlag();
+        updateMode3LogoutButtonVisibility();
+    }
+
+    function updateMode3LogoutButtonVisibility(forceState) {
+        const logoutButton = mode3Elements.logoutBtn || document.getElementById('mode3LogoutBtn');
+        if (!logoutButton) {
+            return;
+        }
+
+        const shouldShow = typeof forceState === 'boolean' ? forceState : checkIfLoggedIn();
+
+        if (shouldShow) {
+            logoutButton.classList.remove('hidden');
+        } else {
+            logoutButton.classList.add('hidden');
+        }
+    }
+
+    function setupMode3Interactions() {
+        if (!mode3Elements.container) {
+            return;
+        }
+
+        const logoutButton = mode3Elements.logoutBtn || document.getElementById('mode3LogoutBtn');
+        mode3Elements.logoutBtn = logoutButton;
+        if (logoutButton && !logoutButton.dataset.mode3LogoutBound) {
+            logoutButton.dataset.mode3LogoutBound = 'true';
+            logoutButton.addEventListener('click', () => {
+                const proceed = typeof window.confirm === 'function'
+                    ? window.confirm('Are you sure you want to logout?')
+                    : true;
+
+                if (!proceed) {
+                    return;
+                }
+
+                if (typeof window.logout === 'function') {
+                    window.logout();
+                } else {
+                    console.warn('[ModeSwitcher] logout() not available on window.');
+                }
+            });
+        }
+
+        if (!mode3LayoutInitialized) {
+            const iconContainer = document.getElementById('mode3TiktokIconContainer');
+            if (iconContainer && !iconContainer.dataset.mode3UploadBound) {
+                iconContainer.dataset.mode3UploadBound = 'true';
+                iconContainer.addEventListener('click', () => {
+                    const fileInput = document.getElementById('imageUpload');
+                    if (fileInput) {
+                        fileInput.click();
+                    }
+                });
+            }
+
+                updateMode3LogoutButtonVisibility();
+            const settingsBtn = mode3Elements.settingsBtn;
+            if (settingsBtn && !settingsBtn.dataset.mode3SettingsBound) {
+                settingsBtn.dataset.mode3SettingsBound = 'true';
+                settingsBtn.addEventListener('click', () => {
+                    const mode2SettingsBtn = document.getElementById('mode2SettingsBtn') || document.getElementById('mode2SettingsHeaderBtn');
+                    if (mode2SettingsBtn) {
+                        mode2SettingsBtn.click();
+                    }
+                });
+            }
+
+            mode3LayoutInitialized = true;
+        }
+
+        if (mode3Elements.buyButton && !mode3Elements.buyButton.dataset.mode3BuyBound) {
+            mode3Elements.buyButton.dataset.mode3BuyBound = 'true';
+            mode3Elements.buyButton.addEventListener('click', () => {
+                if (mode3SelectedIndex < 0 || mode3SelectedIndex >= MODE3_COIN_PACKAGES.length) {
+                    return;
+                }
+
+                const pkg = MODE3_COIN_PACKAGES[mode3SelectedIndex];
+                if (!pkg) {
+                    return;
+                }
+
+                if (mode3SelectedIndex === MODE3_CUSTOM_INDEX) {
+                    if (typeof window.openCustomDrawer === 'function') {
+                        window.openCustomDrawer();
+                    }
+                    return;
+                }
+
+                const usernameInput = document.getElementById('mode3UsernameInput') ||
+                    document.getElementById('mode2UsernameInput') ||
+                    document.querySelector('input[data-slot="input"][placeholder="Type"]') ||
+                    document.querySelector('input[data-slot="input"]');
+
+                const usernameValue = usernameInput ? (usernameInput.value || '').trim() : '';
+                const safeUsername = usernameValue || 'Guest';
+
+                if (typeof window.openOrderSummary === 'function') {
+                    window.openOrderSummary(pkg.coins, pkg.price.toFixed(2), safeUsername);
+                }
+            });
+        }
+
+        mode3Elements.coinButtons.forEach((button) => {
+            if (button.dataset.mode3Bound) {
+                return;
+            }
+            button.dataset.mode3Bound = 'true';
+            button.addEventListener('click', () => {
+                const index = Number(button.dataset.mode3Index);
+                if (!Number.isFinite(index)) {
+                    return;
+                }
+
+                if (index === MODE3_CUSTOM_INDEX) {
+                    setMode3Selection(index, { triggerCustom: true });
+                    return;
+                }
+
+                setMode3Selection(index);
+            });
+        });
+
+        resetMode3Selection();
+    }
+
+    function resetMode3Selection() {
+        mode3SelectedIndex = -1;
+        updateMode3SelectionUI();
+    }
+
+    function setMode3Selection(index, options = {}) {
+        mode3SelectedIndex = index;
+        updateMode3SelectionUI();
+
+        if (index === MODE3_CUSTOM_INDEX && options.triggerCustom && typeof window.openCustomDrawer === 'function') {
+            window.openCustomDrawer();
+        }
+    }
+
+    function updateMode3SelectionUI() {
+        if (!mode3Elements.container) {
+            return;
+        }
+
+        const summary = mode3Elements.selectionSummary;
+        const hint = mode3Elements.selectionText;
+        const buyButton = mode3Elements.buyButton;
+
+        mode3Elements.coinButtons.forEach((button, index) => {
+            if (!button) return;
+            if (index === mode3SelectedIndex) {
+                button.classList.add('mode3-selected');
+            } else {
+                button.classList.remove('mode3-selected');
+            }
+        });
+
+        if (!buyButton) {
+            return;
+        }
+
+        if (mode3SelectedIndex < 0 || mode3SelectedIndex >= MODE3_COIN_PACKAGES.length) {
+            buyButton.disabled = true;
+            buyButton.textContent = 'Choose a package';
+            if (summary) {
+                summary.textContent = 'None';
+            }
+            if (hint) {
+                hint.textContent = 'Select a coin package to see price.';
+            }
+            return;
+        }
+
+        const pkg = MODE3_COIN_PACKAGES[mode3SelectedIndex];
+
+        if (mode3SelectedIndex === MODE3_CUSTOM_INDEX) {
+            buyButton.disabled = false;
+            buyButton.textContent = 'Enter custom amount';
+            if (summary) {
+                summary.textContent = 'Custom amount';
+            }
+            if (hint) {
+                hint.textContent = 'Tap to enter the amount you want to recharge.';
+            }
+            return;
+        }
+
+        buyButton.disabled = false;
+        buyButton.textContent = `Buy for $${pkg.price.toFixed(2)}`;
+        if (summary) {
+            summary.textContent = `${pkg.coins.toLocaleString()} Coins`; 
+        }
+        if (hint) {
+            hint.textContent = `Package includes ${pkg.coins.toLocaleString()} coins for $${pkg.price.toFixed(2)}.`;
+        }
+    }
+
+    function activateMode3Layout() {
+        createMode3Layout();
+
+        const mode1 = document.getElementById('mode1Layout');
+        if (mode1) {
+            if (mode1.dataset.prevDisplay === undefined) {
+                mode1.dataset.prevDisplay = mode1.style.display || '';
+            }
+            mode1.style.display = 'none';
+        }
+
+        const mode2Container = document.getElementById('mode2Container');
+        if (mode2Container) {
+            mode2Container.classList.remove('active');
+            mode2Container.classList.add('hidden');
+        }
+
+        if (mode3Elements.container) {
+            mode3Elements.container.classList.add('active');
+            mode3Elements.container.classList.remove('hidden');
+        }
+
+        resetMode3Selection();
+        syncProfileData();
+    }
+
+    function deactivateMode3Layout() {
+        if (mode3Elements.container) {
+            mode3Elements.container.classList.remove('active');
+            mode3Elements.container.classList.add('hidden');
+        }
+
+        const mode1 = document.getElementById('mode1Layout');
+        if (mode1) {
+            const prev = mode1.dataset.prevDisplay !== undefined ? mode1.dataset.prevDisplay : '';
+            mode1.style.display = prev;
+        }
+    }
+
+    function setupMode2Settings() {
+        // Create settings modal if it doesn't exist
+        if (!document.getElementById('mode2SettingsModal')) {
+            const modal = document.createElement('div');
+            modal.id = 'mode2SettingsModal';
+            modal.innerHTML = `
+                <div class="mode2-settings-content">
+                    <div class="mode2-settings-header">
+                        <h2 class="mode2-settings-title">Settings</h2>
+                        <button class="mode2-settings-close" id="mode2SettingsClose">&times;</button>
+                    </div>
+                    
+                    <!-- Success Checkmark Size -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Edit tick green
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                            <input 
+                                type="range" 
+                                id="checkmarkSizeSlider" 
+                                min="1" 
+                                max="3" 
+                                step="0.5" 
+                                value="1" 
+                                style="flex: 1; cursor: pointer;"
+                            />
+                            <span id="checkmarkSizeValue" style="font-size: 14px; font-weight: 600; color: #374151; min-width: 3rem; text-align: right;">1x</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            Adjust the size of the green checkmark on successful recharge (1x to 3x)
+                        </div>
+                        <!-- Preview -->
+                        <div style="margin-top: 12px; padding: 16px; background: #f9fafb; border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                            <div id="checkmarkPreview" style="background: #d1fae5; border-radius: 50%; display: flex; align-items: center; justify-content: center; width: 4rem; height: 4rem;">
+                                <svg style="color: #059669; width: 2rem; height: 2rem;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Display Text Section (Mode 2 only) -->
+                    <div class="mode2-settings-field" id="mode2TextSection">
+                        <label class="mode2-settings-label" for="mode2RechargeTextInput">
+                            Display Text (Mode 2 Only)
+                        </label>
+                        <input 
+                            type="text" 
+                            id="mode2RechargeTextInput" 
+                            class="mode2-settings-input" 
+                            placeholder="Enter custom text (e.g., Recharge, Top Up, Add Coins)"
+                            maxlength="20"
+                        />
+                        <div class="mode2-settings-hint">
+                            This text will appear above the coin counter in Mode 2
+                        </div>
+                    </div>
+                    
+                    <!-- Payment Processing Modal Toggle -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Payment Processing Animation
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="showPaymentProcessing" checked />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="paymentProcessingLabel" style="font-size: 14px; color: #374151;">Show processing animation</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            When enabled, shows a loading animation and countdown during payment processing
+                        </div>
+                    </div>
+
+
+                    <!-- Coin Amount Input and Add/Decrease Switch -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label" for="mode2CoinAmountInput">
+                            Default Coin Amount
+                        </label>
+                        <input 
+                            type="number" 
+                            id="mode2CoinAmountInput" 
+                            class="mode2-settings-input" 
+                            placeholder="Enter default coin amount"
+                            min="1"
+                            style="max-width: 120px;"
+                        />
+                        <div class="mode2-settings-hint">
+                            This amount will be used for add/decrease actions on the coin counter
+                        </div>
+                    </div>
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Coin Counter Action
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="mode2CoinActionSwitch" />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="mode2CoinActionLabel" style="font-size: 14px; color: #374151;">Add to coin counter</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            Toggle on to <b>add</b> the amount to your coin counter after recharge, or off to <b>decrease</b>.<br>
+                            If decrease is selected and your balance is 0 or less, the set amount will be added instead.
+                        </div>
+                    </div>
+                    <!-- Username Formatting Toggle -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Username Formatting
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="addAtSymbolToggle" />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="addAtSymbolLabel" style="font-size: 14px; color: #374151;">Use username exactly as entered</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            Toggle on to automatically prefix usernames with @ when entering them in the app
+                        </div>
+                    </div>
+
+                    <!-- Success Message Style Toggle -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Success Message Style
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="successMessageStyleToggle" />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="successMessageStyleLabel" style="font-size: 14px; color: #374151;">Full-page white background</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            Toggle on to show a rounded overlay with modified text, or off for full-page style display
+                        </div>
+                    </div>
+
+                    <!-- Face ID Verification Toggle -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Face ID Verification
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="faceIdVerificationToggle" />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="faceIdVerificationLabel" style="font-size: 14px; color: #374151;">Disabled</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            Toggle on to show a Face ID scan animation before payment processing. A verification screen will appear asking you to verify your identity before completing the payment.
+                        </div>
+                    </div>
+                    
+                    <!-- TikTok Profile Lookup Toggle -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            TikTok Profile Lookup
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="profileLookupToggle" />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="profileLookupLabel" style="font-size: 14px; color: #374151;">Disabled</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            When enabled, shows TikTok profile preview (avatar, nickname, followers) below username input as you type
+                        </div>
+                    </div>
+                    
+                    <!-- Auto Go Back Toggle -->
+                    <div class="mode2-settings-field">
+                        <label class="mode2-settings-label">
+                            Auto Return After Payment
+                        </label>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <label class="mode2-settings-toggle">
+                                <input type="checkbox" id="autoGoBackToggle" />
+                                <span class="mode2-settings-toggle-slider"></span>
+                            </label>
+                            <span id="autoGoBackLabel" style="font-size: 14px; color: #374151;">Auto go back</span>
+                        </div>
+                        <div class="mode2-settings-hint">
+                            Toggle on to automatically return to the main page after payment, or off to require manual button click
+                        </div>
+                    </div>
+                    
+                    <button type="button" class="mode2-settings-save" id="mode2SettingsSave">
+                        Save Changes
+                    </button>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        // Set up event listeners
+        const settingsBtn = document.getElementById('mode2SettingsBtn');
+        const headerBtn = document.getElementById('mode2SettingsHeaderBtn');
+        const settingsModal = document.getElementById('mode2SettingsModal');
+        const settingsClose = document.getElementById('mode2SettingsClose');
+        const settingsSave = document.getElementById('mode2SettingsSave');
+        const settingsInput = document.getElementById('mode2RechargeTextInput');
+
+        // Function to open modal
+        const openModal = () => {
+            const currentText = localStorage.getItem('mode2_recharge_text') || 'Recharge';
+            settingsInput.value = currentText;
+
+            // Load checkmark size setting
+            const checkmarkSlider = document.getElementById('checkmarkSizeSlider');
+            const checkmarkValueSpan = document.getElementById('checkmarkSizeValue');
+            const checkmarkPreview = document.getElementById('checkmarkPreview');
+            if (checkmarkSlider && checkmarkValueSpan && checkmarkPreview) {
+                const savedSize = localStorage.getItem('checkmark_size') || '1';
+                checkmarkSlider.value = savedSize;
+                
+                const updateCheckmarkPreview = (size) => {
+                    const sizeFloat = parseFloat(size);
+                    checkmarkValueSpan.textContent = size + 'x';
+                    
+                    const baseContainerSize = 4; // rem
+                    const baseSvgSize = 2; // rem
+                    
+                    const containerSize = baseContainerSize * sizeFloat;
+                    const svgSize = baseSvgSize * sizeFloat;
+                    
+                    checkmarkPreview.style.width = containerSize + 'rem';
+                    checkmarkPreview.style.height = containerSize + 'rem';
+                    
+                    const svg = checkmarkPreview.querySelector('svg');
+                    if (svg) {
+                        svg.style.width = svgSize + 'rem';
+                        svg.style.height = svgSize + 'rem';
+                    }
+                };
+                
+                updateCheckmarkPreview(savedSize);
+                
+                checkmarkSlider.oninput = function() {
+                    updateCheckmarkPreview(this.value);
+                };
+            }
+
+            // Load payment processing toggle setting
+            const showPaymentProcessing = localStorage.getItem('show_payment_processing');
+            const paymentToggle = document.getElementById('showPaymentProcessing');
+            const paymentLabel = document.getElementById('paymentProcessingLabel');
+            if (paymentToggle) {
+                paymentToggle.checked = showPaymentProcessing === null || showPaymentProcessing === 'true';
+                const updatePaymentLabel = (checked) => {
+                    if (paymentLabel) {
+                        paymentLabel.textContent = checked ? 'Show processing animation' : 'Skip processing animation';
+                    }
+                };
+                updatePaymentLabel(paymentToggle.checked);
+
+                // Update label when toggle changes
+                paymentToggle.onchange = function() {
+                    updatePaymentLabel(this.checked);
+                };
+            }
+
+            // Load coin amount and action
+            const coinAmountInput = document.getElementById('mode2CoinAmountInput');
+            const coinActionSwitch = document.getElementById('mode2CoinActionSwitch');
+            const coinActionLabel = document.getElementById('mode2CoinActionLabel');
+            const savedCoinAmount = sanitizePositiveAmount(localStorage.getItem(DEFAULT_COIN_AMOUNT_KEY));
+            coinAmountInput.value = savedCoinAmount > 0 ? savedCoinAmount : '';
+            const savedCoinAction = localStorage.getItem('mode2_coin_action') || 'add';
+            coinActionSwitch.checked = savedCoinAction === 'add';
+            const updateCoinActionLabel = (checked) => {
+                if (coinActionLabel) {
+                    coinActionLabel.textContent = checked ? 'Add to coin counter' : 'Decrease from coin counter';
+                }
+            };
+            updateCoinActionLabel(coinActionSwitch.checked);
+            coinActionSwitch.onchange = function() {
+                updateCoinActionLabel(this.checked);
+            };
+
+            // Load username formatting toggle
+            const addAtToggle = document.getElementById('addAtSymbolToggle');
+            const addAtLabel = document.getElementById('addAtSymbolLabel');
+            if (addAtToggle) {
+                const addAtSetting = localStorage.getItem(ADD_AT_SYMBOL_KEY) === 'true';
+                addAtToggle.checked = addAtSetting;
+
+                const updateAddAtLabel = (checked) => {
+                    if (addAtLabel) {
+                        addAtLabel.textContent = checked ? 'Automatically add @ to username' : 'Use username exactly as entered';
+                    }
+                };
+
+                updateAddAtLabel(addAtToggle.checked);
+                addAtToggle.onchange = function() {
+                    updateAddAtLabel(this.checked);
+                };
+            }
+
+            // Load success message style toggle
+            const successStyleToggle = document.getElementById('successMessageStyleToggle');
+            const successStyleLabel = document.getElementById('successMessageStyleLabel');
+            if (successStyleToggle) {
+                const successStyleSetting = localStorage.getItem('success_message_style') === 'true';
+                successStyleToggle.checked = successStyleSetting;
+
+                const updateSuccessStyleLabel = (checked) => {
+                    if (successStyleLabel) {
+                        successStyleLabel.textContent = checked ? 'Rounded overlay with dimmed background' : 'Full-page white background';
+                    }
+                };
+
+                updateSuccessStyleLabel(successStyleToggle.checked);
+                successStyleToggle.onchange = function() {
+                    updateSuccessStyleLabel(this.checked);
+                };
+            }
+
+            // Load Face ID verification toggle
+            const faceIdToggle = document.getElementById('faceIdVerificationToggle');
+            const faceIdLabel = document.getElementById('faceIdVerificationLabel');
+            if (faceIdToggle) {
+                const faceIdSetting = localStorage.getItem('face_id_verification') === 'true';
+                faceIdToggle.checked = faceIdSetting;
+
+                const updateFaceIdLabel = (checked) => {
+                    if (faceIdLabel) {
+                        faceIdLabel.textContent = checked ? 'Enabled - Verify before payment' : 'Disabled';
+                    }
+                };
+
+                updateFaceIdLabel(faceIdToggle.checked);
+                faceIdToggle.onchange = function() {
+                    updateFaceIdLabel(this.checked);
+                };
+            }
+
+            // Load TikTok Profile Lookup toggle
+            const profileLookupToggle = document.getElementById('profileLookupToggle');
+            const profileLookupLabel = document.getElementById('profileLookupLabel');
+            if (profileLookupToggle) {
+                // Default to true (enabled) if not set
+                const storedValue = localStorage.getItem(PROFILE_LOOKUP_KEY);
+                const profileLookupSetting = storedValue === null ? true : storedValue === 'true';
+                
+                // Initialize storage with default if not set
+                if (storedValue === null) {
+                    localStorage.setItem(PROFILE_LOOKUP_KEY, 'true');
+                }
+                
+                profileLookupToggle.checked = profileLookupSetting;
+
+                const updateProfileLookupLabel = (checked) => {
+                    if (profileLookupLabel) {
+                        profileLookupLabel.textContent = checked ? 'Enabled' : 'Disabled';
+                    }
+                };
+
+                updateProfileLookupLabel(profileLookupToggle.checked);
+                profileLookupToggle.onchange = function() {
+                    updateProfileLookupLabel(this.checked);
+                };
+            }
+
+            // Load Auto Go Back toggle
+            const autoGoBackToggle = document.getElementById('autoGoBackToggle');
+            const autoGoBackLabel = document.getElementById('autoGoBackLabel');
+            if (autoGoBackToggle) {
+                // Default to true (enabled) if not set
+                const storedValue = localStorage.getItem('auto_go_back');
+                const autoGoBackSetting = storedValue === null ? true : storedValue === 'true';
+                
+                // Initialize storage with default if not set
+                if (storedValue === null) {
+                    localStorage.setItem('auto_go_back', 'true');
+                }
+                
+                autoGoBackToggle.checked = autoGoBackSetting;
+
+                const updateAutoGoBackLabel = (checked) => {
+                    if (autoGoBackLabel) {
+                        autoGoBackLabel.textContent = checked ? 'Auto go back' : 'Manual go back';
+                    }
+                };
+
+                updateAutoGoBackLabel(autoGoBackToggle.checked);
+                autoGoBackToggle.onchange = function() {
+                    updateAutoGoBackLabel(this.checked);
+                };
+            }
+
+            // Show/hide enhanced-mode section based on current mode
+            const mode2TextSection = document.getElementById('mode2TextSection');
+            if (mode2TextSection) {
+                if (isEnhancedMode()) {
+                    mode2TextSection.style.display = 'block';
+                } else {
+                    mode2TextSection.style.display = 'none';
+                }
+            }
+
+            settingsModal.classList.add('active');
+        };
+
+        // Open modal from Mode 2 container button
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', openModal);
+        }
+
+        // Open modal from header button (next to Contact Me)
+        if (headerBtn) {
+            headerBtn.addEventListener('click', openModal);
+        }
+
+        // Close modal
+        if (settingsClose) {
+            settingsClose.addEventListener('click', () => {
+                settingsModal.classList.remove('active');
+            });
+        }
+
+        // Close on backdrop click
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) {
+                settingsModal.classList.remove('active');
+            }
+        });
+
+        // Save settings
+        if (settingsSave) {
+            settingsSave.addEventListener('click', () => {
+                const newText = settingsInput.value.trim() || 'Recharge';
+                localStorage.setItem('mode2_recharge_text', newText);
+
+                // Save checkmark size setting
+                const checkmarkSlider = document.getElementById('checkmarkSizeSlider');
+                if (checkmarkSlider) {
+                    localStorage.setItem('checkmark_size', checkmarkSlider.value);
+                }
+
+                // Save payment processing toggle setting
+                const paymentToggle = document.getElementById('showPaymentProcessing');
+                if (paymentToggle) {
+                    localStorage.setItem('show_payment_processing', paymentToggle.checked.toString());
+                }
+
+                // Save coin amount and action
+                const coinAmountInput = document.getElementById('mode2CoinAmountInput');
+                const coinActionSwitch = document.getElementById('mode2CoinActionSwitch');
+                const previousDefault = sanitizePositiveAmount(localStorage.getItem(DEFAULT_COIN_AMOUNT_KEY));
+                let coinAmount = sanitizePositiveAmount(coinAmountInput.value, 1);
+                if (coinAmount < 1) {
+                    coinAmount = 1;
+                }
+                localStorage.setItem(DEFAULT_COIN_AMOUNT_KEY, coinAmount.toString());
+                localStorage.setItem('mode2_coin_action', coinActionSwitch.checked ? 'add' : 'decrease');
+
+                // Only seed the displayed balance when there isn't a saved total yet
+                const existingTotal = getStoredCoinTotal();
+                const changedDefault = Number.isFinite(previousDefault) ? previousDefault !== coinAmount : true;
+                const shouldSeedBalance = !Number.isFinite(existingTotal) || existingTotal <= 0;
+                if (changedDefault || shouldSeedBalance) {
+                    totalCoins = coinAmount;
+                    localStorage.setItem(COIN_COUNTER_KEY, totalCoins.toString());
+                } else {
+                    totalCoins = existingTotal;
+                }
+                updateCoinDisplay();
+
+                const addAtToggle = document.getElementById('addAtSymbolToggle');
+                if (addAtToggle) {
+                    localStorage.setItem(ADD_AT_SYMBOL_KEY, addAtToggle.checked.toString());
+                }
+
+                // Save success message style toggle
+                const successStyleToggle = document.getElementById('successMessageStyleToggle');
+                if (successStyleToggle) {
+                    localStorage.setItem('success_message_style', successStyleToggle.checked.toString());
+                }
+
+                // Save Face ID verification toggle
+                const faceIdToggle = document.getElementById('faceIdVerificationToggle');
+                if (faceIdToggle) {
+                    localStorage.setItem('face_id_verification', faceIdToggle.checked.toString());
+                }
+
+                // Save TikTok Profile Lookup toggle
+                const profileLookupToggle = document.getElementById('profileLookupToggle');
+                if (profileLookupToggle) {
+                    localStorage.setItem(PROFILE_LOOKUP_KEY, profileLookupToggle.checked.toString());
+                    // Broadcast change to trigger profile preview update
+                    window.dispatchEvent(new CustomEvent('profileLookupChanged', { 
+                        detail: { enabled: profileLookupToggle.checked }
+                    }));
+                }
+
+                // Save Auto Go Back toggle
+                const autoGoBackToggle = document.getElementById('autoGoBackToggle');
+                if (autoGoBackToggle) {
+                    localStorage.setItem('auto_go_back', autoGoBackToggle.checked.toString());
+                }
+
+                applyUsernamePreferenceToAll();
+                ensureUsernamePlaceholderFromFlag();
+
+                // Update the display text
+                const rechargeTextElement = document.getElementById('mode2RechargeText');
+                if (rechargeTextElement) {
+                    rechargeTextElement.textContent = newText;
+                }
+
+                // Close modal
+                settingsModal.classList.remove('active');
+
+                // Show success feedback
+                settingsSave.textContent = 'Saved!';
+                setTimeout(() => {
+                    settingsSave.textContent = 'Save Changes';
+                }, 1500);
+            });
+        }
+    }
+        
+    // Helper for coin counter logic (to be called after recharge)
+    function applyCoinCounterSetting(purchasedAmount) {
+        let coinsToApply = sanitizePositiveAmount(purchasedAmount);
+        if (coinsToApply < 1) {
+            coinsToApply = sanitizePositiveAmount(localStorage.getItem(DEFAULT_COIN_AMOUNT_KEY), 1);
+        }
+        if (coinsToApply < 1) {
+            coinsToApply = 1;
+        }
+
+        const action = localStorage.getItem('mode2_coin_action') || 'add';
+        const decreaseMode = action === 'decrease';
+        let currentTotal = getStoredCoinTotal();
+
+        totalCoins = currentTotal; // keep local state in sync
+
+        if (decreaseMode) {
+            const fallbackDefault = sanitizePositiveAmount(
+                localStorage.getItem(DEFAULT_COIN_AMOUNT_KEY),
+                coinsToApply
+            ) || coinsToApply;
+            const safeFallback = fallbackDefault > 0 ? fallbackDefault : coinsToApply;
+
+            if (currentTotal <= 0) {
+                totalCoins = safeFallback;
+                localStorage.setItem(COIN_COUNTER_KEY, totalCoins.toString());
+                updateCoinDisplay();
+                return;
+            }
+
+            const reducedTotal = currentTotal - coinsToApply;
+            if (!Number.isFinite(reducedTotal) || reducedTotal <= 0) {
+                totalCoins = safeFallback;
+            } else {
+                totalCoins = reducedTotal;
+            }
+
+            localStorage.setItem(COIN_COUNTER_KEY, totalCoins.toString());
+            updateCoinDisplay();
+            return;
+        }
+
+        addCoins(coinsToApply);
+    }
+
+    function showMode2SettingsButton() {
+        // Show settings button in login modal header (next to Contact Me)
+        // Primarily surfaced for enhanced modes before login for quick access
+        const headerBtn = document.getElementById('mode2SettingsHeaderBtn');
+        const mode2Container = document.getElementById('mode2Container');
+        
+        if (headerBtn) {
+            headerBtn.classList.remove('hidden');
+        }
+        
+        // Also handle the button in Mode 2 container (if it exists)
+        const settingsBtn = document.getElementById('mode2SettingsBtn');
+        if (settingsBtn && mode2Container) {
+            if (mode2Container.classList.contains('active') || isEnhancedMode()) {
+                settingsBtn.classList.remove('hidden');
+            }
+        }
+
+        const mode3SettingsBtn = document.getElementById('mode3SettingsBtn');
+        if (mode3SettingsBtn) {
+            mode3SettingsBtn.classList.add('visible');
+        }
+    }
+
+    function hideMode2SettingsButton() {
+        // Hide settings button in login modal header
+        const headerBtn = document.getElementById('mode2SettingsHeaderBtn');
+        if (headerBtn) {
+            headerBtn.classList.add('hidden');
+        }
+        
+        // Also hide the button in Mode 2 container (if it exists)
+        const settingsBtn = document.getElementById('mode2SettingsBtn');
+        if (settingsBtn) {
+            settingsBtn.classList.add('hidden');
+        }
+
+        const mode3SettingsBtn = document.getElementById('mode3SettingsBtn');
+        if (mode3SettingsBtn) {
+            mode3SettingsBtn.classList.remove('visible');
+        }
+    }
+
+    function switchMode(mode) {
+        currentMode = mode;
+        localStorage.setItem(STORAGE_KEY, mode);
+        applyMode(mode);
+        updateButtonStates();
+        
+        // Show settings button for BOTH modes on login page
+        const isLoggedIn = checkIfLoggedIn();
+        if (!isLoggedIn) {
+            showMode2SettingsButton();
+        }
+
+        window.dispatchEvent(new CustomEvent('modeChanged', { detail: { mode } }));
+    }
+
+    function applyMode(mode) {
+        document.body.setAttribute('data-layout-mode', mode);
+        
+        const mode2Container = document.getElementById('mode2Container');
+        if (mode === MODE_3) {
+            if (mode2Container) {
+                mode2Container.classList.remove('active');
+                mode2Container.classList.remove('mode3-enhanced');
+                mode2Container.classList.add('hidden');
+            }
+            activateMode3Layout();
+        } else {
+            deactivateMode3Layout();
+
+            if (mode2Container) {
+                if (mode === MODE_2) {
+                    mode2Container.classList.add('active');
+                    mode2Container.classList.remove('mode3-enhanced');
+                    mode2Container.classList.remove('hidden');
+                    
+                    // Sync profile image when switching to Mode 2
+                    setTimeout(() => {
+                        const mode1Image = document.getElementById('uploadedImage');
+                        const mode2Image = document.getElementById('mode2UploadedImage');
+                        const mode2Icon = document.getElementById('mode2TiktokIcon');
+                        const mode2IconContainer = document.getElementById('mode2TiktokIconContainer');
+                        
+                        if (mode1Image && mode2Image && mode2Icon && mode2IconContainer) {
+                            // Check if Mode 1 has an image
+                            if (!mode1Image.classList.contains('hidden') && mode1Image.src) {
+                                mode2Image.src = mode1Image.src;
+                                mode2Image.classList.remove('hidden');
+                                mode2Icon.classList.add('hidden');
+                                mode2IconContainer.classList.add('has-image');
+                                mode2IconContainer.classList.add('ready');
+                                
+                                // Force display styles
+                                mode2Image.style.cssText = 'position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; display: block !important; z-index: 2 !important; border-radius: 9999px !important; object-fit: cover !important;';
+                                mode2Icon.style.cssText = 'display: none !important; z-index: 1 !important;';
+                                
+                                console.log('✅ Synced Mode 1 image to Mode 2 on mode switch');
+                            }
+                        }
+                    }, 50);
+                } else {
+                    mode2Container.classList.remove('active');
+                    mode2Container.classList.remove('mode3-enhanced');
+                    mode2Container.classList.add('hidden');
+                }
+            }
+        }
+        
+    // Surface settings button when user isn't logged in so enhanced modes remain configurable
+        const isLoggedIn = checkIfLoggedIn();
+        if (!isLoggedIn) {
+            showMode2SettingsButton();
+        }
+    }
+
+    function updateButtonStates() {
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            const btnMode = btn.getAttribute('data-mode');
+            if (btnMode === currentMode) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+    }
+
+    function setupCoinTracking() {
+        // Coin tracking now happens only when "Pay now" is clicked
+        // This function is kept for future use if needed
+    }
+
+    function addCoins(amount) {
+        const delta = toInteger(amount);
+        if (!Number.isFinite(delta) || delta === 0) {
+            updateCoinDisplay();
+            return;
+        }
+
+        let currentTotal = getStoredCoinTotal();
+        if (!Number.isFinite(currentTotal) || currentTotal < 0) {
+            currentTotal = 0;
+        }
+
+        totalCoins = currentTotal + delta;
+        if (totalCoins < 0) {
+            totalCoins = 0;
+        }
+
+        if (totalCoins > Number.MAX_SAFE_INTEGER) {
+            totalCoins = Number.MAX_SAFE_INTEGER;
+        }
+
+        localStorage.setItem(COIN_COUNTER_KEY, totalCoins.toString());
+        updateCoinDisplay();
+    }
+
+    function updateCoinDisplay() {
+        const counter = document.getElementById('mode2CoinCounter');
+        if (counter) {
+            // Format number with commas (e.g., 18230 → 18,230)
+            const safeTotal = getStoredCoinTotal();
+            counter.textContent = safeTotal.toLocaleString();
+            
+            // Animate
+            counter.style.transform = 'scale(1.3)';
+            counter.style.color = '#ef4444';
+            setTimeout(() => {
+                counter.style.transform = 'scale(1)';
+                counter.style.color = '#6b7280';
+            }, 300);
+
+            if (mode3Elements.coinCounter) {
+                mode3Elements.coinCounter.textContent = safeTotal.toLocaleString();
+            } else {
+                const mode3Counter = document.getElementById('mode3CoinCounter');
+                if (mode3Counter) {
+                    mode3Counter.textContent = safeTotal.toLocaleString();
+                }
+            }
+        } else {
+            const safeTotal = getStoredCoinTotal();
+            if (mode3Elements.coinCounter) {
+                mode3Elements.coinCounter.textContent = safeTotal.toLocaleString();
+            }
+        }
+    }
+
+    // Export functions for external use
+    console.log('[ModeSwitcher] About to export window.ModeSwitcher...');
+    window.ModeSwitcher = {
+        init: init,
+        hideModeSwitcher: hideModeSwitcher,
+        showModeSwitcher: showModeSwitcher,
+        addCoins: addCoins,
+        getTotalCoins: () => totalCoins,
+        resetCoins: () => {
+            totalCoins = 0;
+            localStorage.setItem(COIN_COUNTER_KEY, '0');
+            updateCoinDisplay();
+        },
+        refreshProfileData: () => {
+            // Refresh Mode 2 profile data (useful after login when currentUser is set)
+            syncProfileData();
+        },
+        refreshCoinDisplay: updateCoinDisplay,
+        showSettingsButton: showMode2SettingsButton,
+        hideSettingsButton: hideMode2SettingsButton,
+        resetUsernameInputsToPlaceholder: resetUsernameInputsToPlaceholder,
+        applyCoinCounterSetting: applyCoinCounterSetting,
+        isProfileLookupEnabled: () => {
+            const storedValue = localStorage.getItem(PROFILE_LOOKUP_KEY);
+            return storedValue === null ? true : storedValue === 'true';
+        },
+        updateMode3LogoutButtonVisibility: updateMode3LogoutButtonVisibility
+    };
+    
+    console.log('[ModeSwitcher] window.ModeSwitcher exported:', window.ModeSwitcher);
+
+})();
+
+console.log('[ModeSwitcher] Script file finished loading. Final check - window.ModeSwitcher:', window.ModeSwitcher);
